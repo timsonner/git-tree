@@ -1,0 +1,335 @@
+#!/bin/bash
+
+# Read the focused Files window and print one JSON object:
+# branches, recent commits, and whether the folder is a git work tree.
+# Files keeps its process working directory on the active pane. The window
+# title is only the folder name, so the title has to agree with that
+# directory before git runs.
+# --view <branch> lists that local branch. It does not check out or write.
+
+set -euo pipefail
+
+export GIT_TERMINAL_PROMPT=0
+export GIT_CONFIG_NOSYSTEM=1
+export GIT_CONFIG_GLOBAL=/dev/null
+export GIT_CONFIG_SYSTEM=/dev/null
+export GIT_PAGER=cat
+export PAGER=cat
+
+here=$(dirname "$(readlink -f "$0")")
+titles_file=$here/titles.json
+
+fail() {
+  jq -nc \
+    --arg reason "$1" \
+    --arg title "${2:-}" \
+    --arg path "${3:-}" \
+    '{ok: false, reason: $reason, title: $title, path: $path}'
+  exit 0
+}
+
+clean_text() {
+  # Drop control characters so a commit subject stays one JSON string.
+  printf '%s' "$1" | tr '\000-\037' ' '
+}
+
+path=""
+title=""
+class=""
+initial=""
+home=""
+commit_sel=""
+view_sel=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --path) path=${2:-}; shift 2 ;;
+    --title) title=${2:-}; shift 2 ;;
+    --class) class=${2:-}; shift 2 ;;
+    --initial-class) initial=${2:-}; shift 2 ;;
+    --home) home=${2:-}; shift 2 ;;
+    --commit) commit_sel=${2:-}; shift 2 ;;
+    --view) view_sel=${2:-}; shift 2 ;;
+    *) fail "git-failed" ;;
+  esac
+done
+
+if [[ -z $home ]]; then
+  home=${HOME:-}
+fi
+home=$(readlink -f "$home" 2>/dev/null || true)
+[[ -n $home && -d $home ]] || home=${HOME:-}
+
+if [[ -z $path ]]; then
+  window=$(timeout 2 hyprctl activewindow -j 2>/dev/null || true)
+  [[ -n $window ]] || fail "no-window"
+  class=$(jq -r '.class // ""' <<<"$window" 2>/dev/null || true)
+  initial=$(jq -r '.initialClass // ""' <<<"$window" 2>/dev/null || true)
+  title=$(jq -r '.title // ""' <<<"$window" 2>/dev/null || true)
+  pid=$(jq -r '.pid // ""' <<<"$window" 2>/dev/null || true)
+  [[ $pid =~ ^[0-9]+$ ]] || fail "cwd" "$title"
+  path=$(readlink -f "/proc/$pid/cwd" 2>/dev/null || true)
+  [[ -n $path && -d $path ]] || fail "cwd" "$title"
+fi
+
+title=$(clean_text "$title")
+title=${title:0:200}
+class=$(clean_text "$class")
+initial=$(clean_text "$initial")
+class=${class,,}
+initial=${initial,,}
+
+[[ $class == folio || $initial == folio ]] || fail "not-folio" "$title" "$path"
+
+path=$(readlink -f "$path" 2>/dev/null || true)
+[[ -n $path && -d $path && $path != *$'\n'* ]] || fail "cwd" "$title"
+
+base=$(basename "$path")
+matched=0
+if [[ $title == "$base" ]]; then
+  matched=1
+fi
+if [[ $matched -eq 0 && $path == "$home" ]]; then
+  if jq -e --arg title "$title" '.home | index($title) != null' "$titles_file" >/dev/null; then
+    matched=1
+  fi
+fi
+if [[ $matched -eq 0 && $path == / ]]; then
+  if jq -e --arg title "$title" '.computer | index($title) != null' "$titles_file" >/dev/null; then
+    matched=1
+  fi
+fi
+[[ $matched -eq 1 ]] || fail "title-mismatch" "$title" "$path"
+
+inside=$(timeout 3 git -C "$path" -c alias.rev-parse= rev-parse --is-inside-work-tree 2>/dev/null || true)
+[[ $inside == true ]] || fail "not-repo" "$title" "$path"
+
+hooks=$(mktemp -d)
+trap 'rm -rf "$hooks"' EXIT
+
+git_at() {
+  local seconds=$1
+  shift
+  timeout "$seconds" git -C "$path" \
+    -c core.hooksPath="$hooks" \
+    -c safe.directory="$path" \
+    -c alias.log= \
+    -c alias.status= \
+    -c alias.rev-parse= \
+    -c alias.for-each-ref= \
+    -c alias.diff= \
+    -c alias.branch= \
+    -c alias.show= \
+    -c alias.switch= \
+    -c alias.checkout= \
+    -c alias.show-ref= \
+    -c alias.check-ref-format= \
+    -c core.pager=cat \
+    -c color.ui=false \
+    "$@"
+}
+
+# One commit: message, the change against its first parent, and the patch.
+# The hash has to be hex. A branch name, a path, or a rev walk is refused
+# before git sees it. Repo diff drivers and attributes are not used.
+show_commit() {
+  [[ $commit_sel =~ ^[0-9a-fA-F]{8,64}$ ]] || fail "git-failed" "$title" "$path"
+  local full
+  full=$(git_at 5 rev-parse --verify --quiet "${commit_sel}^{commit}" 2>/dev/null || true)
+  full=${full//$'\n'/}
+  [[ $full =~ ^[0-9a-fA-F]{40,64}$ ]] || fail "git-failed" "$title" "$path"
+
+  local subject body author email when parents short stat patch
+  subject=$(git_at 5 log -1 --format=%s "$full" 2>/dev/null || true)
+  body=$(git_at 5 log -1 --format=%b "$full" 2>/dev/null | tr -d '\000' || true)
+  author=$(git_at 5 log -1 --format=%an "$full" 2>/dev/null || true)
+  email=$(git_at 5 log -1 --format=%ae "$full" 2>/dev/null || true)
+  when=$(git_at 5 log -1 --format=%aI "$full" 2>/dev/null || true)
+  parents=$(git_at 5 log -1 --format=%P "$full" 2>/dev/null || true)
+  short=$(git_at 5 rev-parse --short=12 "$full" 2>/dev/null || true)
+  stat=$(git_at 8 -c diff.external= -c core.attributesFile=/dev/null \
+    show -m --first-parent --root --stat --format= --no-ext-diff --no-textconv --no-color \
+    "$full" 2>/dev/null | tr -d '\000' || true)
+  patch=$(git_at 8 -c diff.external= -c core.attributesFile=/dev/null \
+    show -m --first-parent --root --format= --no-ext-diff --no-textconv --no-color -p \
+    "$full" 2>/dev/null | tr -d '\000' | head -c 100001 || true)
+
+  local truncated=false
+  if ((${#patch} > 100000)); then
+    truncated=true
+    patch=${patch:0:100000}
+  fi
+  body=${body:0:20000}
+  stat=${stat:0:20000}
+
+  local merge=false
+  local parent_count
+  parent_count=$(wc -w <<<"${parents:-}")
+  if [[ $parent_count -gt 1 ]]; then
+    merge=true
+  fi
+  local parents_json
+  parents_json=$(jq -nc --arg p "$parents" '$p | split(" ") | map(select(test("^[0-9a-fA-F]{8,64}$")))')
+
+  jq -nc \
+    --arg path "$path" \
+    --arg title "$title" \
+    --arg hash "$full" \
+    --arg short "$short" \
+    --arg author "$author" \
+    --arg email "$email" \
+    --arg date "$when" \
+    --arg subject "$subject" \
+    --arg body "$body" \
+    --arg stat "$stat" \
+    --arg diff "$patch" \
+    --argjson parents "$parents_json" \
+    --argjson truncated "$truncated" \
+    --argjson merge "$merge" \
+    '{
+      ok: true,
+      kind: "commit",
+      path: $path,
+      title: $title,
+      hash: $hash,
+      short: ($short | gsub("[\u0000-\u001f]"; "") | .[0:16]),
+      author: ($author | gsub("[\u0000-\u001f]"; " ") | .[0:200]),
+      email: ($email | gsub("[\u0000-\u001f]"; " ") | .[0:200]),
+      date: ($date | gsub("[\u0000-\u001f]"; "") | .[0:40]),
+      subject: ($subject | gsub("[\u0000-\u001f]"; " ") | .[0:300]),
+      body: ($body | gsub("\u0000"; "") | .[0:20000]),
+      parents: $parents,
+      stat: ($stat | gsub("\u0000"; "") | .[0:20000]),
+      diff: ($diff | gsub("\u0000"; "")),
+      truncated: $truncated,
+      merge: $merge
+    }'
+}
+
+if [[ -n $commit_sel ]]; then
+  show_commit
+  exit 0
+fi
+
+# Choosing a branch only selects the log. A bad name never reaches git.
+fail_view() {
+  jq -nc \
+    --arg reason "$1" \
+    --arg title "$title" \
+    --arg path "$path" \
+    '{ok: false, reason: $reason, title: $title, path: $path}'
+  exit 0
+}
+
+viewing=""
+log_selector=(--all)
+if [[ -n $view_sel ]]; then
+  [[ $view_sel != *$'\n'* && $view_sel != *$'\t'* && $view_sel != *'..'* && $view_sel != -* ]] \
+    || fail_view "view-failed"
+  normalized=$(git_at 3 check-ref-format --branch "$view_sel" 2>/dev/null || true)
+  normalized=${normalized//$'\n'/}
+  [[ $normalized == "$view_sel" ]] || fail_view "view-failed"
+  git_at 3 show-ref --verify --quiet "refs/heads/${view_sel}" 2>/dev/null \
+    || fail_view "view-failed"
+  viewing=$view_sel
+  log_selector=("$view_sel")
+fi
+
+branch=$(git_at 3 branch --show-current 2>/dev/null || true)
+branch=$(clean_text "$branch")
+head=$(git_at 3 rev-parse --short=12 HEAD 2>/dev/null || true)
+head=$(clean_text "$head")
+detached=false
+[[ -n $branch ]] || detached=true
+
+dirty=false
+set +e
+set +o pipefail
+probe=$(git_at 3 status --porcelain -uall 2>/dev/null | head -c 1)
+set -o pipefail
+set -e
+if [[ -n $probe ]]; then
+  dirty=true
+fi
+
+sep=$'\x1f'
+branches=$(git_at 5 for-each-ref \
+  --sort=-committerdate \
+  --count=80 \
+  --format="%(refname:short)${sep}%(objectname:short)${sep}%(HEAD)${sep}%(upstream:short)${sep}%(upstream:track)${sep}%(subject)" \
+  refs/heads 2>/dev/null || true)
+
+commits=$(git_at 5 log \
+  "${log_selector[@]}" \
+  --date-order \
+  --max-count=100 \
+  --pretty="tformat:%H${sep}%P${sep}%D${sep}%s${sep}%cI${sep}%h" \
+  2>/dev/null || true)
+
+jq -nc \
+  --arg path "$path" \
+  --arg title "$title" \
+  --arg branch "$branch" \
+  --arg viewing "$viewing" \
+  --arg head "$head" \
+  --argjson detached "$detached" \
+  --argjson dirty "$dirty" \
+  --arg branches "$branches" \
+  --arg commits "$commits" '
+  def clean:
+    gsub("[\u0000-\u001f]"; " ") | .[0:160];
+  def tracknum($pattern):
+    (capture($pattern) // null) as $m
+    | if $m == null then 0 else ($m.n | tonumber) end;
+  def refs_of:
+    if length == 0 then []
+    else
+      split(", ")
+      | map(
+          gsub("^HEAD -> "; "")
+          | gsub("^tag: "; "")
+          | gsub("^refs/heads/"; "")
+          | gsub("^refs/remotes/"; "")
+          | gsub("^refs/tags/"; "")
+          | clean
+        )
+      | map(select(length > 0 and . != "HEAD"))
+      | .[0:6]
+    end;
+  def records:
+    split("\n") | map(select(length > 0) | split("\u001f") | map(gsub("^\\s+|\\s+$"; "")));
+  {
+    ok: true,
+    path: $path,
+    title: $title,
+    branch: ($branch | clean),
+    viewing: ($viewing | gsub("[\u0000-\u001f]"; "") | .[0:200]),
+    head: ($head | clean),
+    detached: $detached,
+    dirty: $dirty,
+    branches: (
+      ($branches | records)
+      | map(select(length >= 6) | {
+          name: (.[0] | clean),
+          hash: (.[1] | clean),
+          current: (.[2] == "*"),
+          upstream: (.[3] | clean),
+          ahead: (.[4] | tracknum("ahead (?<n>[0-9]+)")),
+          behind: (.[4] | tracknum("behind (?<n>[0-9]+)")),
+          subject: (.[5] | clean)
+        })
+      | sort_by(.current | not)
+    ),
+    commits: (
+      ($commits | records)
+      | map(select(length >= 6) | {
+          hash: .[0],
+          parents: (.[1] | split(" ") | map(select(length > 0))),
+          refs: (.[2] | refs_of),
+          subject: (.[3] | clean),
+          date: .[4],
+          short: (.[5] | clean)
+        })
+    )
+  }
+'

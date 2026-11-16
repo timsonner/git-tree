@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "timsonner.git-tree",
+  "name": "Git Tree",
+  "version": "1.0.0",
+  "author": "Tim Sonner",
+  "license": "MIT",
+  "description": "Branches and recent commits for the git repository open in Files.",
+  "kinds": ["overlay"],
+  "keepLoaded": true,
+  "entryPoints": {
+    "overlay": "Tree.qml"
+  }
+}

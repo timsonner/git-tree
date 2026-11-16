@@ -1,0 +1,154 @@
+#!/bin/bash
+
+# Checks the manifest, the lane layout, and the Files folder rules.
+
+set -euo pipefail
+
+root=$(dirname "$(readlink -f "$0")")
+cd "$root"
+
+fail() {
+  echo "validate: $*" >&2
+  exit 1
+}
+
+omarchy plugin validate "$root"
+
+hits=$(grep -R -n $'\u2014\|\u2013' --exclude-dir=.git --exclude titles.json . || true)
+[[ -z $hits ]] || fail "em dash or en dash: $hits"
+
+text_blocks=$(grep -c 'Text {' Tree.qml || true)
+plain_blocks=$(grep -c 'textFormat: Text.PlainText' Tree.qml || true)
+[[ $text_blocks -eq $plain_blocks ]] || fail "every Text needs Text.PlainText ($plain_blocks of $text_blocks)"
+
+command -v node >/dev/null || fail "node is required to check Graph.js"
+node "$root/Graph.js"
+
+[[ -x $root/helpers/snapshot ]] || fail "helpers/snapshot is not executable"
+
+snap() {
+  "$root/helpers/snapshot" "$@"
+}
+
+reason() {
+  jq -er '.reason' <<<"$1"
+}
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+repo=$tmp/sample
+mkdir -p "$repo"
+git -C "$repo" init -q -b main
+git -C "$repo" config user.email "git-tree@example.com"
+git -C "$repo" config user.name "git-tree"
+git -C "$repo" config commit.gpgsign false
+echo start > "$repo/file"
+git -C "$repo" add file
+git -C "$repo" commit -q -m "start"
+git -C "$repo" switch -q -c feature
+echo more >> "$repo/file"
+git -C "$repo" commit -q -am "feature work"
+git -C "$repo" switch -q main
+
+ok=$(snap --path "$repo" --title sample --class folio)
+jq -e '.ok == true and .branch == "main" and (.branches | length) == 2 and (.commits | length) >= 2' <<<"$ok" >/dev/null \
+  || fail "repo snapshot was not the expected graph: $ok"
+jq -e '.commits[0].subject | type == "string"' <<<"$ok" >/dev/null || fail "commit subject missing"
+current=$(jq -er '[.branches[] | select(.current)] | length' <<<"$ok")
+[[ $current -eq 1 ]] || fail "expected one current branch"
+
+home_ok=$(snap --path "$repo" --title Home --class Folio --home "$repo")
+jq -e '.ok == true' <<<"$home_ok" >/dev/null || fail "Home title should accept the home directory: $home_ok"
+
+computer_no=$(snap --path "$repo" --title Computer --class folio)
+[[ $(reason "$computer_no") == title-mismatch ]] || fail "Computer title on a normal folder should not match: $computer_no"
+
+mismatch=$(snap --path "$repo" --title Recents --class folio)
+[[ $(reason "$mismatch") == title-mismatch ]] || fail "Recents should not match: $mismatch"
+
+other=$(snap --path "$repo" --title sample --class google-chrome)
+[[ $(reason "$other") == not-folio ]] || fail "a non-Files window should be refused: $other"
+
+preview=$(snap --path "$repo" --title sample --class folio-preview)
+[[ $(reason "$preview") == not-folio ]] || fail "the preview window should be refused: $preview"
+
+plain=$tmp/plain
+mkdir -p "$plain"
+not_repo=$(snap --path "$plain" --title plain --class folio)
+[[ $(reason "$not_repo") == not-repo ]] || fail "a normal folder should not look like a repo: $not_repo"
+
+markup=$tmp/markup
+mkdir -p "$markup"
+git -C "$markup" init -q -b main
+git -C "$markup" config user.email "git-tree@example.com"
+git -C "$markup" config user.name "git-tree"
+git -C "$markup" config commit.gpgsign false
+echo x > "$markup/file"
+git -C "$markup" add file
+git -C "$markup" commit -q -m '<img src="https://example.invalid/tracker">'
+marked=$(snap --path "$markup" --title markup --class folio)
+jq -e '.ok == true and (.commits[0].subject | contains("<img"))' <<<"$marked" >/dev/null \
+  || fail "a markup-shaped subject should be preserved as text: $marked"
+
+body=$tmp/bodyrepo
+mkdir -p "$body"
+git -C "$body" init -q -b main
+git -C "$body" config user.email "git-tree@example.com"
+git -C "$body" config user.name "git-tree"
+git -C "$body" config commit.gpgsign false
+echo old > "$body/file"
+git -C "$body" add file
+git -C "$body" commit -q -m "start"
+printf '%s\n' '<img src="https://example.invalid/tracker">' second > "$body/file"
+git -C "$body" commit -q -am "$(printf '%s\n' 'Show the line' '' 'The body stays on its own line.')"
+shown=$(snap --path "$body" --title bodyrepo --class folio --commit "$(git -C "$body" rev-parse HEAD)")
+jq -e '
+  .ok == true and .kind == "commit" and .merge == false
+  and .subject == "Show the line"
+  and (.body | contains("The body stays on its own line."))
+  and (.diff | contains("<img"))
+  and (.diff | contains("diff --git"))
+' <<<"$shown" >/dev/null || fail "commit detail should keep the message and the diff as text: $shown"
+
+git -C "$body" switch -q -c feature
+echo side > "$body/other"
+git -C "$body" add other
+git -C "$body" commit -q -m "side change"
+git -C "$body" switch -q main
+git -C "$body" merge -q --no-ff feature -m "Merge branch feature"
+merged=$(snap --path "$body" --title bodyrepo --class folio --commit "$(git -C "$body" rev-parse HEAD)")
+jq -e '.ok == true and .merge == true and (.parents | length) == 2 and (.diff | contains("side"))' <<<"$merged" >/dev/null \
+  || fail "a merge commit should show the first-parent diff: $merged"
+
+for bad in main 'deadbeef' '--output=/tmp/nope' 'HEAD'; do
+  refused=$(snap --path "$body" --title bodyrepo --class folio --commit "$bad")
+  [[ $(reason "$refused") == git-failed ]] || fail "commit $bad should be refused: $refused"
+done
+
+before=$(git -C "$repo" rev-parse HEAD)
+reviewed=$(snap --path "$repo" --title sample --class folio --view feature)
+jq -e '.ok == true and .branch == "main" and .viewing == "feature" and .commits[0].subject == "feature work"' <<<"$reviewed" >/dev/null \
+  || fail "viewing a branch should list that branch and stay on the checkout: $reviewed"
+[[ $(git -C "$repo" rev-parse HEAD) == "$before" ]] || fail "viewing a branch changed HEAD"
+[[ $(git -C "$repo" branch --show-current) == main ]] || fail "viewing a branch changed the checkout"
+grep -q 'git switch' "$root/helpers/snapshot" && fail "the helper must not switch branches"
+
+whole=$(snap --path "$repo" --title sample --class folio)
+jq -e '.ok == true and .viewing == "" and ([.commits[].subject] | index("feature work")) != null' <<<"$whole" >/dev/null \
+  || fail "the overview should keep every branch: $whole"
+
+for bad in '../main' '--output=/tmp/nope' 'feature..main' 'no-such-branch'; do
+  refused=$(snap --path "$repo" --title sample --class folio --view "$bad")
+  [[ $(reason "$refused") == view-failed ]] || fail "view $bad should be refused: $refused"
+  [[ $(git -C "$repo" branch --show-current) == main ]] || fail "a refused view changed the checkout"
+done
+
+echo dirty >> "$repo/file"
+dirty_view=$(snap --path "$repo" --title sample --class folio --view feature)
+jq -e '.ok == true and .branch == "main" and .viewing == "feature" and .dirty == true' <<<"$dirty_view" >/dev/null \
+  || fail "a dirty work tree should still be readable: $dirty_view"
+[[ $(git -C "$repo" branch --show-current) == main ]] || fail "reading a dirty tree changed the checkout"
+[[ $(git -C "$repo" status --porcelain) == ' M file' ]] || fail "reading a branch changed a file"
+
+echo "validate: ok"

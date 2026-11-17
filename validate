@@ -14,7 +14,7 @@ fail() {
 
 omarchy plugin validate "$root"
 
-hits=$(grep -R -n $'\u2014\|\u2013' --exclude-dir=.git --exclude titles.json . || true)
+hits=$(grep -R -n $'\u2014\|\u2013' --exclude-dir=.git --exclude titles.json --exclude '*.png' . || true)
 [[ -z $hits ]] || fail "em dash or en dash: $hits"
 
 text_blocks=$(grep -c 'Text {' Tree.qml || true)

@@ -8,6 +8,12 @@ Enabling the plugin installs the overlay. It does not change your Hyprland keys.
 
 Focus a Files window that is showing a git repository, then press Super+Ctrl+G. The overlay lists local branches and the recent commit graph. Click a branch to review that branch's commits. The row says Viewing. Hover a line in the graph to see which branch it is, and click that line to select the branch in the list. The checkout stays where it is. Click the branch again to return to the whole repository. Click a commit to read its message and the diff. Commit subjects, messages, and diffs are plain text. Esc returns from a commit to the history. Esc from a branch returns to the current branch, and Esc again closes the overlay. A click on the dimmed area, or Super+Ctrl+G, closes it immediately.
 
+![The current branch and the commit graph](preview.png)
+
+![Reviewing another branch](screenshots/branch.png)
+
+![A commit, with additions and removals](screenshots/commit.png)
+
 Files keeps its working directory on the active pane. The overlay reads that directory from the focused Files window. The window title has to match the folder:
 
 - The title is the folder's name, or

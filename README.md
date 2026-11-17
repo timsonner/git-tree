@@ -26,7 +26,7 @@ The graph includes every ref, up to 100 commits. The list on the left is local b
 
 ## What you set up
 
-Copy `bindings.snippet.lua` into `~/.config/hypr/bindings.lua`. If Escape is already bound, do not bind it a second time. Add the Git Tree check to that dismiss function instead. The snippet says how.
+The install command does not add keys. Copy `bindings.snippet.lua` into `~/.config/hypr/bindings.lua` only if you want the shortcut. If Escape is already bound, do not bind it a second time. Add the Git Tree check to that dismiss function instead. The snippet says how.
 
 ```sh
 hyprctl reload
@@ -51,10 +51,12 @@ Quickshell ships with Omarchy.
 ## Install
 
 ```sh
-omarchy plugin add https://github.com/timsonner/git-tree --enable --yes
+omarchy plugin add https://github.com/timsonner/git-tree --enable
 ```
 
-That clones the plugin to `~/.config/omarchy/plugins/timsonner.git-tree/`. Plugin id: `timsonner.git-tree`.
+The command asks before it clones. Plugins run unsandboxed inside the shell. That clones the plugin to `~/.config/omarchy/plugins/timsonner.git-tree/`. Plugin id: `timsonner.git-tree`. It does not change your Hyprland keys.
+
+If an AI agent is doing the install for you, point it at `AGENTS.md`. The agent must not copy keys unless you agree.
 
 ## Keys
 
@@ -97,6 +99,18 @@ omarchy-shell timsonner.git-tree review <branch>
 ```
 
 That checks the manifest, the lane layout, and the folder rules against a temporary git repository. It does not need a running shell.
+
+## Uninstall
+
+In `~/.config/hypr/bindings.lua`, remove the Super+Ctrl+G toggle. If Escape was bound only for Git Tree, remove that dismiss bind. If another dismiss function calls `omarchy-shell timsonner.git-tree back`, remove that check and leave the rest of the function. Keep your other binds. Then:
+
+```sh
+omarchy plugin remove timsonner.git-tree
+hyprctl reload
+omarchy restart shell
+```
+
+`omarchy plugin remove` asks before it disables the plugin and deletes a git checkout. A hand-copied folder with no git repo is moved to a timestamped backup in the plugins directory. Removing the plugin does not restore keys by itself, because those lines live in your config.
 
 ## Limits
 

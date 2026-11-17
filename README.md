@@ -20,7 +20,7 @@ The graph includes every ref, up to 100 commits. The list on the left is local b
 
 ## What you set up
 
-Copy `bindings.snippet.lua` into `~/.config/hypr/bindings.lua`. If NittyGriddy already binds Escape, do not bind Escape a second time. Add the Git Tree check to that dismiss function instead. The snippet says how.
+Copy `bindings.snippet.lua` into `~/.config/hypr/bindings.lua`. If Escape is already bound, do not bind it a second time. Add the Git Tree check to that dismiss function instead. The snippet says how.
 
 ```sh
 hyprctl reload

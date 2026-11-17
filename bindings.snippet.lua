@@ -5,7 +5,7 @@
 -- the overlay is already open. Anywhere else the chord is left alone.
 -- Super+G stays Omarchy's window grouping chord.
 --
--- If NittyGriddy already binds Escape, do not bind Escape again. Add the
+-- If Escape is already bound, do not bind it again. Add the
 -- git_tree_mapped() check to that dismiss function instead.
 
 local function git_tree_mapped()

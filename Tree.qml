@@ -1060,6 +1060,15 @@ Item {
                           font.pixelSize: Style.font.caption
                         }
                         Text {
+                          visible: branchRow.branch.merged === true
+                          textFormat: Text.PlainText
+                          text: strings.t("branch.merged")
+                          color: root.foreground
+                          opacity: 0.62
+                          font.family: Style.font.family
+                          font.pixelSize: Style.font.caption
+                        }
+                        Text {
                           visible: (branchRow.branch.upstream || "").length > 0
                           textFormat: Text.PlainText
                           text: branchRow.branch.upstream || ""

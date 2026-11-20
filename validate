@@ -144,6 +144,42 @@ for bad in '../main' '--output=/tmp/nope' 'feature..main' 'no-such-branch'; do
   [[ $(git -C "$repo" branch --show-current) == main ]] || fail "a refused view changed the checkout"
 done
 
+gone=$tmp/gone
+mkdir -p "$gone"
+git -C "$gone" init -q -b main
+git -C "$gone" config user.email "git-tree@example.com"
+git -C "$gone" config user.name "git-tree"
+git -C "$gone" config commit.gpgsign false
+echo start > "$gone/file"
+git -C "$gone" add file
+git -C "$gone" commit -q -m "start"
+git -C "$gone" switch -q -c jules-8240
+echo side >> "$gone/file"
+git -C "$gone" commit -q -am "update skills"
+git -C "$gone" switch -q main
+git -C "$gone" merge -q --no-ff jules-8240 -m "Merge pull request #1 from timsonner/jules-8240"
+git -C "$gone" branch -D -q jules-8240
+git -C "$gone" update-ref refs/remotes/origin/main main
+kept=$(snap --path "$gone" --title gone --class folio)
+jq -e '
+  .ok == true
+  and ([.branches[].name] | index("jules-8240") != null)
+  and ([.branches[].name] | index("origin/main") == null)
+  and ([.branches[].name] | index("main") != null)
+  and ([.branches[] | select(.name == "jules-8240")][0].merged == true)
+  and ([.branches[] | select(.name == "jules-8240")][0].subject == "update skills")
+  and ([.branches[] | select(.name == "main")][0].merged == false)
+  and ([.branches[] | select(.current)] | length) == 1
+' <<<"$kept" >/dev/null || fail "a merged branch with no ref should stay in the list: $kept"
+before=$(git -C "$gone" rev-parse HEAD)
+reviewed_gone=$(snap --path "$gone" --title gone --class folio --view jules-8240)
+jq -e '.ok == true and .branch == "main" and .viewing == "jules-8240" and .commits[0].subject == "update skills" and ([.branches[].name] | index("jules-8240") != null)' <<<"$reviewed_gone" >/dev/null \
+  || fail "viewing a merged branch should list its commits and stay on the checkout: $reviewed_gone"
+[[ $(git -C "$gone" rev-parse HEAD) == "$before" ]] || fail "viewing a merged branch changed HEAD"
+[[ $(git -C "$gone" branch --show-current) == main ]] || fail "viewing a merged branch changed the checkout"
+refused_remote=$(snap --path "$gone" --title gone --class folio --view origin/main)
+[[ $(reason "$refused_remote") == view-failed ]] || fail "a remote copy should not be a separate branch: $refused_remote"
+
 echo dirty >> "$repo/file"
 dirty_view=$(snap --path "$repo" --title sample --class folio --view feature)
 jq -e '.ok == true and .branch == "main" and .viewing == "feature" and .dirty == true' <<<"$dirty_view" >/dev/null \

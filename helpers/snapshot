@@ -5,7 +5,9 @@
 # Files keeps its process working directory on the active pane. The window
 # title is only the folder name, so the title has to agree with that
 # directory before git runs.
-# --view <branch> lists that local branch. It does not check out or write.
+# --view <branch> lists that local branch, or a merged branch the graph still
+# names. It does not check out or write. A remote copy of a local branch,
+# such as origin/main beside main, is not a separate row.
 
 set -euo pipefail
 
@@ -221,20 +223,6 @@ fail_view() {
   exit 0
 }
 
-viewing=""
-log_selector=(--all)
-if [[ -n $view_sel ]]; then
-  [[ $view_sel != *$'\n'* && $view_sel != *$'\t'* && $view_sel != *'..'* && $view_sel != -* ]] \
-    || fail_view "view-failed"
-  normalized=$(git_at 3 check-ref-format --branch "$view_sel" 2>/dev/null || true)
-  normalized=${normalized//$'\n'/}
-  [[ $normalized == "$view_sel" ]] || fail_view "view-failed"
-  git_at 3 show-ref --verify --quiet "refs/heads/${view_sel}" 2>/dev/null \
-    || fail_view "view-failed"
-  viewing=$view_sel
-  log_selector=("$view_sel")
-fi
-
 branch=$(git_at 3 branch --show-current 2>/dev/null || true)
 branch=$(clean_text "$branch")
 head=$(git_at 3 rev-parse --short=12 HEAD 2>/dev/null || true)
@@ -258,6 +246,79 @@ branches=$(git_at 5 for-each-ref \
   --count=80 \
   --format="%(refname:short)${sep}%(objectname:short)${sep}%(HEAD)${sep}%(upstream:short)${sep}%(upstream:track)${sep}%(subject)" \
   refs/heads 2>/dev/null || true)
+# The same window the graph draws. A merged branch often has no ref left.
+history=$(git_at 5 log \
+  --all \
+  --date-order \
+  --max-count=100 \
+  --pretty="tformat:%H${sep}%P${sep}%s${sep}%h" \
+  2>/dev/null || true)
+merged_json=$(jq -nc \
+  --arg history "$history" \
+  --arg branches "$branches" '
+  def clean:
+    gsub("[\u0000-\u001f]"; " ") | .[0:160];
+  def records:
+    split("\n") | map(select(length > 0) | split("\u001f") | map(gsub("^\\s+|\\s+$"; "")));
+  def merged_name($s):
+    if ($s | test("^Merge pull request #[0-9]+ from [^ ]+/")) then
+      $s | sub("^Merge pull request #[0-9]+ from [^ ]+/"; "")
+    elif ($s | test("^Merge remote-tracking branch \u0027.+\u0027$")) then
+      $s | capture("Merge remote-tracking branch \u0027(?<n>.+)\u0027").n
+    elif ($s | test("^Merge branch \u0027.+\u0027$")) then
+      $s | capture("Merge branch \u0027(?<n>.+)\u0027").n
+    else "" end;
+  ($branches | records | map(select(length >= 6) | .[0] | clean) | map(select(length > 0))) as $names
+  | ($history | records | map(select(length >= 4))) as $rows
+  | ($rows | map({key: .[0], value: {short: (.[3] | clean), subject: (.[2] | clean)}}) | from_entries) as $by
+  | {
+      rows: (
+        [ $rows[]
+          | . as $row
+          | ($row[2] | merged_name(.)) as $raw
+          | ($raw | clean) as $n
+          | select(($n | length) > 0 and $n != "HEAD" and ($n | endswith("/HEAD") | not))
+          | ($row[1] | split(" ") | map(select(length > 0))) as $ps
+          | select(($ps | length) >= 2)
+          | ($ps[1]) as $tip
+          | select($tip | test("^[0-9a-fA-F]{40}$"))
+          | ($by[$tip] // {}) as $tiprow
+          | {
+              name: $n,
+              tip: $tip,
+              hash: (if ($tiprow.short // "") != "" then $tiprow.short else $tip[0:12] end),
+              current: false,
+              upstream: "",
+              ahead: 0,
+              behind: 0,
+              subject: ($tiprow.subject // ""),
+              merged: true
+            }
+        ]
+        | unique_by(.name)
+        | map(select(.name as $n | ($names | index($n)) == null))
+      )
+    }
+')
+
+viewing=""
+log_selector=(--all)
+if [[ -n $view_sel ]]; then
+  [[ $view_sel != *$'\n'* && $view_sel != *$'\t'* && $view_sel != *'..'* && $view_sel != -* ]] \
+    || fail_view "view-failed"
+  normalized=$(git_at 3 check-ref-format --branch "$view_sel" 2>/dev/null || true)
+  normalized=${normalized//$'\n'/}
+  [[ $normalized == "$view_sel" ]] || fail_view "view-failed"
+  if git_at 3 show-ref --verify --quiet "refs/heads/${view_sel}" 2>/dev/null; then
+    viewing=$view_sel
+    log_selector=("$view_sel")
+  else
+    tip=$(jq -r --arg name "$view_sel" 'first(.rows[] | select(.name == $name) | .tip) // empty' <<<"$merged_json")
+    [[ $tip =~ ^[0-9a-fA-F]{40}$ ]] || fail_view "view-failed"
+    viewing=$view_sel
+    log_selector=("$tip")
+  fi
+fi
 
 commits=$(git_at 5 log \
   "${log_selector[@]}" \
@@ -275,6 +336,7 @@ jq -nc \
   --argjson detached "$detached" \
   --argjson dirty "$dirty" \
   --arg branches "$branches" \
+  --argjson merged "$merged_json" \
   --arg commits "$commits" '
   def clean:
     gsub("[\u0000-\u001f]"; " ") | .[0:160];
@@ -308,16 +370,21 @@ jq -nc \
     detached: $detached,
     dirty: $dirty,
     branches: (
-      ($branches | records)
-      | map(select(length >= 6) | {
-          name: (.[0] | clean),
-          hash: (.[1] | clean),
-          current: (.[2] == "*"),
-          upstream: (.[3] | clean),
-          ahead: (.[4] | tracknum("ahead (?<n>[0-9]+)")),
-          behind: (.[4] | tracknum("behind (?<n>[0-9]+)")),
-          subject: (.[5] | clean)
-        })
+      (
+        ($branches | records)
+        | map(select(length >= 6) | {
+            name: (.[0] | clean),
+            hash: (.[1] | clean),
+            current: (.[2] == "*"),
+            upstream: (.[3] | clean),
+            ahead: (.[4] | tracknum("ahead (?<n>[0-9]+)")),
+            behind: (.[4] | tracknum("behind (?<n>[0-9]+)")),
+            subject: (.[5] | clean),
+            merged: false
+          })
+        | map(select(.name | length > 0))
+      )
+      + ($merged.rows | map(del(.tip)))
       | sort_by(.current | not)
     ),
     commits: (

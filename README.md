@@ -6,7 +6,7 @@ Branches and recent commits for the git repository open in Files.
 
 Enabling the plugin installs the overlay. It does not change your Hyprland keys.
 
-Focus a Files window that is showing a git repository, then press Super+Ctrl+G. The overlay lists local branches and the recent commit graph. Click a branch to review that branch's commits. The row says Viewing. Hover a line in the graph to see which branch it is, and click that line to select the branch in the list. The checkout stays where it is. Click the branch again to return to the whole repository. Click a commit to read its message and the diff. Commit subjects, messages, and diffs are plain text. Esc returns from a commit to the history. Esc from a branch returns to the current branch, and Esc again closes the overlay. A click on the dimmed area, or Super+Ctrl+G, closes it immediately.
+Focus a Files window that is showing a git repository, then press Super+Ctrl+G. The overlay lists local branches and the recent commit graph. Click a branch to review that branch's commits. The row says Viewing. Hover a line in the graph to see which branch it is, including a remote line and a branch named by a merge. Click a local branch's line to select it in the list. The checkout stays where it is. Click the branch again to return to the whole repository. Click a commit to read its message and the diff. Commit subjects, messages, and diffs are plain text. Esc returns from a commit to the history. Esc from a branch returns to the current branch, and Esc again closes the overlay. A click on the dimmed area, or Super+Ctrl+G, closes it immediately.
 
 ![The current branch and the commit graph](preview.png)
 
@@ -65,8 +65,8 @@ If an AI agent is doing the install for you, point it at `AGENTS.md`. The agent 
 | Super+Ctrl+G | Opens the history for the folder Files is showing | Closes the overlay |
 | Escape | Passes through, unless another bind consumes it | Returns to the history when a commit is open. From a branch, returns to the current branch. Otherwise closes the overlay. The compositor bind runs before an input method |
 | Click a branch | | Reviews that branch. The row says Viewing. The checkout does not change. Click the same branch again to return to the whole repository |
-| Hover a graph line | | Shows that line's branch name |
-| Click a graph line | | Selects that branch in the list and reviews its commits |
+| Hover a graph line | | Shows that line's branch name, including a remote line or a branch named by a merge |
+| Click a graph line | | Selects that local branch in the list and reviews its commits |
 | Click a commit | | Opens that commit: message, file summary, and diff |
 | Click History | | Returns to the branch list and the graph |
 | Click the dimmed area | | Closes the overlay |

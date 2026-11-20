@@ -149,6 +149,18 @@ Item {
     return false
   }
 
+  function localBranch(name) {
+    var wanted = String(name || "")
+    if (wanted.length === 0)
+      return false
+    var i
+    for (i = 0; i < root.branches.length; i++) {
+      if (root.branches[i] && root.branches[i].name === wanted)
+        return true
+    }
+    return false
+  }
+
   function paintLanes(ctx, lane, through, edges, laneSpan, rowSpan, lineNames, hoverName) {
     ctx.reset()
     ctx.lineCap = "round"
@@ -1310,7 +1322,7 @@ Item {
                       anchors.bottom: parent.bottom
                       width: laneBox.width
                       hoverEnabled: true
-                      cursorShape: lineHover.branch.length > 0 ? Qt.PointingHandCursor : Qt.ArrowCursor
+                      cursorShape: lineHover.branch.length > 0 && root.localBranch(lineHover.branch) ? Qt.PointingHandCursor : Qt.ArrowCursor
                       property int column: {
                         if (!containsMouse || root.laneWidth <= 0)
                           return -1
@@ -1335,7 +1347,7 @@ Item {
                         Qt.callLater(function() { root.clearLineHover(commitRow) })
                       }
                       onClicked: {
-                        if (branch.length > 0)
+                        if (branch.length > 0 && root.localBranch(branch))
                           root.selectBranch(branch)
                       }
                     }

@@ -5,7 +5,7 @@
 # Files keeps its process working directory on the active pane. The window
 # title is only the folder name, so the title has to agree with that
 # directory before git runs.
-# --view <branch> lists that local branch, or a merged branch the graph still
+# GIT_TREE_VIEW names a local branch, or a merged branch the graph still
 # names. It does not check out or write. A remote copy of a local branch,
 # such as origin/main beside main, is not a separate row.
 
@@ -41,7 +41,7 @@ class=""
 initial=""
 home=""
 commit_sel=""
-view_sel=""
+view_sel=${GIT_TREE_VIEW-}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -51,7 +51,6 @@ while [[ $# -gt 0 ]]; do
     --initial-class) initial=${2:-}; shift 2 ;;
     --home) home=${2:-}; shift 2 ;;
     --commit) commit_sel=${2:-}; shift 2 ;;
-    --view) view_sel=${2:-}; shift 2 ;;
     *) fail "git-failed" ;;
   esac
 done
@@ -86,6 +85,53 @@ initial=${initial,,}
 path=$(readlink -f "$path" 2>/dev/null || true)
 [[ -n $path && -d $path && $path != *$'\n'* ]] || fail "cwd" "$title"
 
+umask 077
+scratch=$(mktemp -d)
+data=$scratch/data
+hooks=$scratch/hooks
+mkdir -p "$data" "$hooks"
+trap 'rm -rf "$scratch"' EXIT
+
+keep() {
+  printf '%s' "$2" > "$data/$1"
+}
+
+static_cfgs=(
+  -c "core.hooksPath=$hooks"
+  -c core.fsmonitor=false
+  -c core.untrackedCache=false
+  -c core.pager=cat
+  -c core.attributesFile=/dev/null
+  -c diff.external=
+  -c submodule.recurse=false
+  -c status.submoduleSummary=false
+  -c fetch.recurseSubmodules=false
+  -c diff.ignoreSubmodules=all
+  -c log.showSignature=false
+  -c alias.config=
+  -c alias.log=
+  -c alias.status=
+  -c alias.rev-parse=
+  -c alias.for-each-ref=
+  -c alias.diff=
+  -c alias.branch=
+  -c alias.show=
+  -c alias.switch=
+  -c alias.checkout=
+  -c alias.show-ref=
+  -c alias.check-ref-format=
+  -c pager.config=false
+  -c pager.status=false
+  -c pager.log=false
+  -c pager.show=false
+  -c pager.branch=false
+  -c pager.diff=false
+  -c pager.rev-parse=false
+  -c pager.for-each-ref=false
+  -c color.ui=false
+  -c "safe.directory=$path"
+)
+
 base=$(basename "$path")
 matched=0
 if [[ $title == "$base" ]]; then
@@ -103,32 +149,43 @@ if [[ $matched -eq 0 && $path == / ]]; then
 fi
 [[ $matched -eq 1 ]] || fail "title-mismatch" "$title" "$path"
 
-inside=$(timeout 3 git -C "$path" -c alias.rev-parse= rev-parse --is-inside-work-tree 2>/dev/null || true)
+inside=$(timeout 3 git -C "$path" "${static_cfgs[@]}" rev-parse --is-inside-work-tree 2>/dev/null || true)
 [[ $inside == true ]] || fail "not-repo" "$title" "$path"
 
-hooks=$(mktemp -d)
-trap 'rm -rf "$hooks"' EXIT
+dynamic_cfgs=()
+seen_required=" "
+while IFS= read -r key; do
+  key=${key%$'\r'}
+  [[ $key =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || continue
+  case "$key" in
+    filter.*.clean|filter.*.smudge|filter.*.process)
+      dynamic_cfgs+=(-c "$key=")
+      name=${key#filter.}
+      name=${name%.*}
+      if [[ $seen_required != *" $name "* ]]; then
+        dynamic_cfgs+=(-c "filter.${name}.required=false")
+        seen_required+="$name "
+      fi
+      ;;
+    filter.*.required)
+      dynamic_cfgs+=(-c "$key=false")
+      ;;
+    diff.*.command|diff.*.textconv|diff.external|diff.tool|diff.guitool)
+      dynamic_cfgs+=(-c "$key=")
+      ;;
+    alias.*)
+      dynamic_cfgs+=(-c "$key=")
+      ;;
+    pager.*)
+      dynamic_cfgs+=(-c "$key=false")
+      ;;
+  esac
+done < <(timeout 3 git -C "$path" "${static_cfgs[@]}" config --name-only --list 2>/dev/null || true)
 
 git_at() {
   local seconds=$1
   shift
-  timeout "$seconds" git -C "$path" \
-    -c core.hooksPath="$hooks" \
-    -c safe.directory="$path" \
-    -c alias.log= \
-    -c alias.status= \
-    -c alias.rev-parse= \
-    -c alias.for-each-ref= \
-    -c alias.diff= \
-    -c alias.branch= \
-    -c alias.show= \
-    -c alias.switch= \
-    -c alias.checkout= \
-    -c alias.show-ref= \
-    -c alias.check-ref-format= \
-    -c core.pager=cat \
-    -c color.ui=false \
-    "$@"
+  timeout "$seconds" git -C "$path" "${static_cfgs[@]}" "${dynamic_cfgs[@]}" "$@"
 }
 
 # One commit: message, the change against its first parent, and the patch.
@@ -149,11 +206,11 @@ show_commit() {
   when=$(git_at 5 log -1 --format=%aI "$full" 2>/dev/null || true)
   parents=$(git_at 5 log -1 --format=%P "$full" 2>/dev/null || true)
   short=$(git_at 5 rev-parse --short=12 "$full" 2>/dev/null || true)
-  stat=$(git_at 8 -c diff.external= -c core.attributesFile=/dev/null \
-    show -m --first-parent --root --stat --format= --no-ext-diff --no-textconv --no-color \
+  stat=$(git_at 8 \
+    show -m --first-parent --root --stat --format= --no-ext-diff --no-textconv --no-color --ignore-submodules=all \
     "$full" 2>/dev/null | tr -d '\000' || true)
-  patch=$(git_at 8 -c diff.external= -c core.attributesFile=/dev/null \
-    show -m --first-parent --root --format= --no-ext-diff --no-textconv --no-color -p \
+  patch=$(git_at 8 \
+    show -m --first-parent --root --format= --no-ext-diff --no-textconv --no-color --ignore-submodules=all -p \
     "$full" 2>/dev/null | tr -d '\000' | head -c 100001 || true)
 
   local truncated=false
@@ -170,22 +227,28 @@ show_commit() {
   if [[ $parent_count -gt 1 ]]; then
     merge=true
   fi
-  local parents_json
-  parents_json=$(jq -nc --arg p "$parents" '$p | split(" ") | map(select(test("^[0-9a-fA-F]{8,64}$")))')
+
+  keep subject "$subject"
+  keep body "$body"
+  keep author "$author"
+  keep email "$email"
+  keep stat "$stat"
+  keep patch "$patch"
+  keep parents "$parents"
 
   jq -nc \
     --arg path "$path" \
     --arg title "$title" \
     --arg hash "$full" \
     --arg short "$short" \
-    --arg author "$author" \
-    --arg email "$email" \
     --arg date "$when" \
-    --arg subject "$subject" \
-    --arg body "$body" \
-    --arg stat "$stat" \
-    --arg diff "$patch" \
-    --argjson parents "$parents_json" \
+    --rawfile author "$data/author" \
+    --rawfile email "$data/email" \
+    --rawfile subject "$data/subject" \
+    --rawfile body "$data/body" \
+    --rawfile stat "$data/stat" \
+    --rawfile diff "$data/patch" \
+    --rawfile parents "$data/parents" \
     --argjson truncated "$truncated" \
     --argjson merge "$merge" \
     '{
@@ -200,7 +263,7 @@ show_commit() {
       date: ($date | gsub("[\u0000-\u001f]"; "") | .[0:40]),
       subject: ($subject | gsub("[\u0000-\u001f]"; " ") | .[0:300]),
       body: ($body | gsub("\u0000"; "") | .[0:20000]),
-      parents: $parents,
+      parents: ($parents | split(" ") | map(select(test("^[0-9a-fA-F]{8,64}$")))),
       stat: ($stat | gsub("\u0000"; "") | .[0:20000]),
       diff: ($diff | gsub("\u0000"; "")),
       truncated: $truncated,
@@ -233,7 +296,7 @@ detached=false
 dirty=false
 set +e
 set +o pipefail
-probe=$(git_at 3 status --porcelain -uall 2>/dev/null | head -c 1)
+probe=$(git_at 3 status --porcelain -uall --ignore-submodules=all 2>/dev/null | head -c 1)
 set -o pipefail
 set -e
 if [[ -n $probe ]]; then
@@ -244,7 +307,7 @@ sep=$'\x1f'
 branches=$(git_at 5 for-each-ref \
   --sort=-committerdate \
   --count=80 \
-  --format="%(refname:short)${sep}%(objectname:short)${sep}%(HEAD)${sep}%(upstream:short)${sep}%(upstream:track)${sep}%(subject)" \
+  --format="%(refname:short)${sep}%(objectname:short)${sep}%(HEAD)${sep}%(upstream:short)${sep}%(upstream:track)${sep}%(subject)${sep}%(objectname)" \
   refs/heads 2>/dev/null || true)
 # The same window the graph draws. A merged branch often has no ref left.
 history=$(git_at 5 log \
@@ -253,9 +316,11 @@ history=$(git_at 5 log \
   --max-count=100 \
   --pretty="tformat:%H${sep}%P${sep}%s${sep}%h" \
   2>/dev/null || true)
-merged_json=$(jq -nc \
-  --arg history "$history" \
-  --arg branches "$branches" '
+keep branches "$branches"
+keep history "$history"
+jq -nc \
+  --rawfile history "$data/history" \
+  --rawfile branches "$data/branches" '
   def clean:
     gsub("[\u0000-\u001f]"; " ") | .[0:160];
   def records:
@@ -299,25 +364,27 @@ merged_json=$(jq -nc \
         | map(select(.name as $n | ($names | index($n)) == null))
       )
     }
-')
+' > "$data/merged"
 
 viewing=""
 log_selector=(--all)
 if [[ -n $view_sel ]]; then
   [[ $view_sel != *$'\n'* && $view_sel != *$'\t'* && $view_sel != *'..'* && $view_sel != -* ]] \
     || fail_view "view-failed"
-  normalized=$(git_at 3 check-ref-format --branch "$view_sel" 2>/dev/null || true)
-  normalized=${normalized//$'\n'/}
-  [[ $normalized == "$view_sel" ]] || fail_view "view-failed"
-  if git_at 3 show-ref --verify --quiet "refs/heads/${view_sel}" 2>/dev/null; then
-    viewing=$view_sel
-    log_selector=("$view_sel")
-  else
-    tip=$(jq -r --arg name "$view_sel" 'first(.rows[] | select(.name == $name) | .tip) // empty' <<<"$merged_json")
-    [[ $tip =~ ^[0-9a-fA-F]{40}$ ]] || fail_view "view-failed"
-    viewing=$view_sel
-    log_selector=("$tip")
+  view_tip=""
+  while IFS=$'\x1f' read -r name short_hash is_head upstream track subject full_hash; do
+    [[ $name == "$view_sel" ]] || continue
+    view_tip=${full_hash//[[:space:]]/}
+    break
+  done <<<"$branches"
+  if [[ ! $view_tip =~ ^[0-9a-fA-F]{40,64}$ ]]; then
+    keep view_sel "$view_sel"
+    view_tip=$(jq -r --rawfile name "$data/view_sel" 'first(.rows[] | select(.name == $name) | .tip) // empty' "$data/merged")
+    view_tip=${view_tip//[[:space:]]/}
   fi
+  [[ $view_tip =~ ^[0-9a-fA-F]{40,64}$ ]] || fail_view "view-failed"
+  viewing=$view_sel
+  log_selector=("$view_tip")
 fi
 
 commits=$(git_at 5 log \
@@ -327,17 +394,21 @@ commits=$(git_at 5 log \
   --pretty="tformat:%H${sep}%P${sep}%D${sep}%s${sep}%cI${sep}%h" \
   2>/dev/null || true)
 
+keep branch "$branch"
+keep viewing "$viewing"
+keep head "$head"
+keep commits "$commits"
 jq -nc \
   --arg path "$path" \
   --arg title "$title" \
-  --arg branch "$branch" \
-  --arg viewing "$viewing" \
-  --arg head "$head" \
+  --rawfile branch "$data/branch" \
+  --rawfile viewing "$data/viewing" \
+  --rawfile head "$data/head" \
   --argjson detached "$detached" \
   --argjson dirty "$dirty" \
-  --arg branches "$branches" \
-  --argjson merged "$merged_json" \
-  --arg commits "$commits" '
+  --rawfile branches "$data/branches" \
+  --slurpfile merged "$data/merged" \
+  --rawfile commits "$data/commits" '
   def clean:
     gsub("[\u0000-\u001f]"; " ") | .[0:160];
   def tracknum($pattern):
@@ -384,7 +455,7 @@ jq -nc \
           })
         | map(select(.name | length > 0))
       )
-      + ($merged.rows | map(del(.tip)))
+      + ($merged[0].rows | map(del(.tip)))
       | sort_by(.current | not)
     ),
     commits: (

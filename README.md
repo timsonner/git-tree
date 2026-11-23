@@ -116,6 +116,6 @@ omarchy restart shell
 
 A split Files window uses the active pane. Two Files windows share one process, and Files points the working directory at the window that is active.
 
-The overlay does not checkout a branch, commit, or change any file. Clicking a branch only changes which commits are listed. It runs `git` with hooks disabled and does not follow a `log`, `status`, `show`, or `switch` alias.
+The overlay does not checkout a branch, commit, or change any file. Clicking a branch only changes which commits are listed. It runs `git` with hooks disabled and does not follow a `log`, `status`, `show`, or `switch` alias. Repository fsmonitor programs, clean and process filters, diff drivers, pagers, and submodule recursion are not run. A missing promisor object stays missing: the repository's ssh command, git proxy, and credential helper are not started. Branch names and commit text stay off the command line.
 
 A commit's diff is the change against its first parent, including for a merge. The patch is capped, so a very large change says it was truncated. Repo diff drivers and attributes are not used.

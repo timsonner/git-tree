@@ -1,0 +1,30 @@
+name: validate
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git jq nodejs
+          curl -fsSL -o /tmp/omarchy-plugin-validate https://raw.githubusercontent.com/basecamp/omarchy/quattro/bin/omarchy-plugin-validate
+          sudo install -m 0755 /tmp/omarchy-plugin-validate /usr/local/bin/omarchy-plugin-validate
+          sudo tee /usr/local/bin/omarchy >/dev/null <<'EOF'
+          #!/bin/bash
+          set -euo pipefail
+          if [[ ${1:-} == plugin && ${2:-} == validate ]]; then
+            shift 2
+            exec omarchy-plugin-validate "$@"
+          fi
+          echo "unsupported omarchy command: $*" >&2
+          exit 127
+          EOF
+          sudo chmod 0755 /usr/local/bin/omarchy
+      - name: Validate
+        run: ./validate

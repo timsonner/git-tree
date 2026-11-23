@@ -584,12 +584,8 @@ Item {
   function startView() {
     viewProc.exited = false
     viewProc.streamReady = false
-    var cmd = [root.helperPath, "--path", root.pathText, "--title", root.titleText, "--class", "folio"]
-    if (root.viewPending.length > 0) {
-      cmd.push("--view")
-      cmd.push(root.viewPending)
-    }
-    viewProc.command = cmd
+    viewProc.environment = ({ GIT_TREE_VIEW: root.viewPending })
+    viewProc.command = [root.helperPath, "--path", root.pathText, "--title", root.titleText, "--class", "folio"]
     viewProc.running = true
   }
 
@@ -657,6 +653,7 @@ Item {
     id: snapProc
     property int token: 0
     property string output: ""
+    environment: ({ GIT_TREE_VIEW: null })
     command: [root.helperPath]
     stdout: StdioCollector {
       onStreamFinished: snapProc.output = String(text || "")
@@ -686,6 +683,7 @@ Item {
     property int token: 0
     property bool exited: false
     property bool streamReady: false
+    environment: ({ GIT_TREE_VIEW: null })
     command: ["true"]
     stdout: StdioCollector {
       id: showOut
@@ -723,6 +721,7 @@ Item {
     property int token: 0
     property bool exited: false
     property bool streamReady: false
+    environment: ({ GIT_TREE_VIEW: "" })
     command: ["true"]
     stdout: StdioCollector {
       id: viewOut

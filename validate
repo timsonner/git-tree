@@ -127,7 +127,7 @@ for bad in main 'deadbeef' '--output=/tmp/nope' 'HEAD'; do
 done
 
 before=$(git -C "$repo" rev-parse HEAD)
-reviewed=$(snap --path "$repo" --title sample --class folio --view feature)
+reviewed=$(GIT_TREE_VIEW=feature snap --path "$repo" --title sample --class folio)
 jq -e '.ok == true and .branch == "main" and .viewing == "feature" and .commits[0].subject == "feature work"' <<<"$reviewed" >/dev/null \
   || fail "viewing a branch should list that branch and stay on the checkout: $reviewed"
 [[ $(git -C "$repo" rev-parse HEAD) == "$before" ]] || fail "viewing a branch changed HEAD"
@@ -139,7 +139,7 @@ jq -e '.ok == true and .viewing == "" and ([.commits[].subject] | index("feature
   || fail "the overview should keep every branch: $whole"
 
 for bad in '../main' '--output=/tmp/nope' 'feature..main' 'no-such-branch'; do
-  refused=$(snap --path "$repo" --title sample --class folio --view "$bad")
+  refused=$(GIT_TREE_VIEW="$bad" snap --path "$repo" --title sample --class folio)
   [[ $(reason "$refused") == view-failed ]] || fail "view $bad should be refused: $refused"
   [[ $(git -C "$repo" branch --show-current) == main ]] || fail "a refused view changed the checkout"
 done
@@ -172,19 +172,22 @@ jq -e '
   and ([.branches[] | select(.current)] | length) == 1
 ' <<<"$kept" >/dev/null || fail "a merged branch with no ref should stay in the list: $kept"
 before=$(git -C "$gone" rev-parse HEAD)
-reviewed_gone=$(snap --path "$gone" --title gone --class folio --view jules-8240)
+reviewed_gone=$(GIT_TREE_VIEW=jules-8240 snap --path "$gone" --title gone --class folio)
 jq -e '.ok == true and .branch == "main" and .viewing == "jules-8240" and .commits[0].subject == "update skills" and ([.branches[].name] | index("jules-8240") != null)' <<<"$reviewed_gone" >/dev/null \
   || fail "viewing a merged branch should list its commits and stay on the checkout: $reviewed_gone"
 [[ $(git -C "$gone" rev-parse HEAD) == "$before" ]] || fail "viewing a merged branch changed HEAD"
 [[ $(git -C "$gone" branch --show-current) == main ]] || fail "viewing a merged branch changed the checkout"
-refused_remote=$(snap --path "$gone" --title gone --class folio --view origin/main)
+refused_remote=$(GIT_TREE_VIEW=origin/main snap --path "$gone" --title gone --class folio)
 [[ $(reason "$refused_remote") == view-failed ]] || fail "a remote copy should not be a separate branch: $refused_remote"
 
 echo dirty >> "$repo/file"
-dirty_view=$(snap --path "$repo" --title sample --class folio --view feature)
+dirty_view=$(GIT_TREE_VIEW=feature snap --path "$repo" --title sample --class folio)
 jq -e '.ok == true and .branch == "main" and .viewing == "feature" and .dirty == true' <<<"$dirty_view" >/dev/null \
   || fail "a dirty work tree should still be readable: $dirty_view"
 [[ $(git -C "$repo" branch --show-current) == main ]] || fail "reading a dirty tree changed the checkout"
 [[ $(git -C "$repo" status --porcelain) == ' M file' ]] || fail "reading a branch changed a file"
+
+"$root/tests/hostile.sh"
+"$root/tests/argv.sh"
 
 echo "validate: ok"

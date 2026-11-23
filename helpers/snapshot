@@ -12,11 +12,15 @@
 set -euo pipefail
 
 export GIT_TERMINAL_PROMPT=0
+export GIT_NO_LAZY_FETCH=1
+export GIT_PROTOCOL_FROM_USER=0
 export GIT_CONFIG_NOSYSTEM=1
 export GIT_CONFIG_GLOBAL=/dev/null
 export GIT_CONFIG_SYSTEM=/dev/null
 export GIT_PAGER=cat
 export PAGER=cat
+unset GIT_SSH_COMMAND
+unset GIT_SSH
 
 here=$(dirname "$(readlink -f "$0")")
 titles_file=$here/titles.json
@@ -106,6 +110,10 @@ static_cfgs=(
   -c submodule.recurse=false
   -c status.submoduleSummary=false
   -c fetch.recurseSubmodules=false
+  -c protocol.allow=never
+  -c core.sshCommand=false
+  -c core.gitProxy=
+  -c credential.helper=
   -c diff.ignoreSubmodules=all
   -c log.showSignature=false
   -c alias.config=
@@ -152,40 +160,77 @@ fi
 inside=$(timeout 3 git -C "$path" "${static_cfgs[@]}" rev-parse --is-inside-work-tree 2>/dev/null || true)
 [[ $inside == true ]] || fail "not-repo" "$title" "$path"
 
-dynamic_cfgs=()
-seen_required=" "
-while IFS= read -r key; do
-  key=${key%$'\r'}
-  [[ $key =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || continue
-  case "$key" in
-    filter.*.clean|filter.*.smudge|filter.*.process)
-      dynamic_cfgs+=(-c "$key=")
-      name=${key#filter.}
-      name=${name%.*}
-      if [[ $seen_required != *" $name "* ]]; then
-        dynamic_cfgs+=(-c "filter.${name}.required=false")
-        seen_required+="$name "
-      fi
+if ! timeout 3 git -C "$path" "${static_cfgs[@]}" config --null --name-only --list >"$data/keys"; then
+  fail "git-failed" "$title" "$path"
+fi
+
+dyn_count=0
+add_pair() {
+  printf -v "GIT_CONFIG_KEY_${dyn_count}" '%s' "$1"
+  printf -v "GIT_CONFIG_VALUE_${dyn_count}" '%s' "$2"
+  export "GIT_CONFIG_KEY_${dyn_count}" "GIT_CONFIG_VALUE_${dyn_count}"
+  dyn_count=$((dyn_count + 1))
+}
+
+while IFS= read -r -d '' key; do
+  [[ -n $key && $key != *$'\n'* && $key != *$'\r'* ]] || fail "git-failed" "$title" "$path"
+  section=${key%%.*}
+  [[ $section != "$key" ]] || continue
+  rest=${key#*.}
+  [[ -n $rest ]] || fail "git-failed" "$title" "$path"
+  variable=${rest##*.}
+  if [[ $variable == "$rest" ]]; then
+    subsection=
+  else
+    subsection=${rest%.*}
+  fi
+  [[ -n $variable ]] || fail "git-failed" "$title" "$path"
+  sec=$(printf '%s' "$section" | LC_ALL=C tr 'A-Z' 'a-z')
+  var=$(printf '%s' "$variable" | LC_ALL=C tr 'A-Z' 'a-z')
+  case "$sec" in
+    filter)
+      case "$var" in
+        clean|smudge|process)
+          add_pair "$key" ""
+          if [[ -n $subsection ]]; then
+            add_pair "filter.${subsection}.required" false
+          else
+            add_pair filter.required false
+          fi
+          ;;
+        required)
+          add_pair "$key" false
+          ;;
+      esac
       ;;
-    filter.*.required)
-      dynamic_cfgs+=(-c "$key=false")
+    diff)
+      case "$var" in
+        command|textconv|external|tool|guitool)
+          add_pair "$key" ""
+          ;;
+      esac
       ;;
-    diff.*.command|diff.*.textconv|diff.external|diff.tool|diff.guitool)
-      dynamic_cfgs+=(-c "$key=")
+    alias)
+      add_pair "$key" ""
       ;;
-    alias.*)
-      dynamic_cfgs+=(-c "$key=")
-      ;;
-    pager.*)
-      dynamic_cfgs+=(-c "$key=false")
+    pager)
+      add_pair "$key" false
       ;;
   esac
-done < <(timeout 3 git -C "$path" "${static_cfgs[@]}" config --name-only --list 2>/dev/null || true)
+done <"$data/keys"
 
 git_at() {
   local seconds=$1
   shift
-  timeout "$seconds" git -C "$path" "${static_cfgs[@]}" "${dynamic_cfgs[@]}" "$@"
+  (
+    export GIT_NO_LAZY_FETCH=1
+    export GIT_TERMINAL_PROMPT=0
+    export GIT_PROTOCOL_FROM_USER=0
+    unset GIT_SSH_COMMAND
+    unset GIT_SSH
+    export GIT_CONFIG_COUNT="$dyn_count"
+    timeout "$seconds" git -C "$path" "${static_cfgs[@]}" "$@"
+  )
 }
 
 # One commit: message, the change against its first parent, and the patch.

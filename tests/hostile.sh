@@ -4,7 +4,7 @@ set -euo pipefail
 
 root=$(dirname "$(readlink -f "$0")")
 root=$(dirname "$root")
-helper=$root/helpers/snapshot
+helper=${GIT_TREE_HELPER:-$root/helpers/snapshot}
 
 export GIT_TERMINAL_PROMPT=0
 export GIT_CONFIG_NOSYSTEM=1
@@ -12,7 +12,14 @@ export GIT_CONFIG_GLOBAL=/dev/null
 export GIT_CONFIG_SYSTEM=/dev/null
 
 tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
+httpd_pid=
+cleanup() {
+  if [[ -n ${httpd_pid:-} ]]; then
+    kill "$httpd_pid" 2>/dev/null || true
+  fi
+  rm -rf "$tmp"
+}
+trap cleanup EXIT
 
 mark=$tmp/mark.sh
 printf '%s\n' '#!/bin/bash' 'if [[ -n ${MARKER:-} ]]; then printf x >> "$MARKER"; fi' 'exit 0' > "$mark"
@@ -42,6 +49,11 @@ new_repo() {
 run_one() {
   local label=$1
   shift
+  local expect='.ok == true'
+  if [[ ${1:-} == --expect ]]; then
+    expect=$2
+    shift 2
+  fi
   local marker=$tmp/marker
   local out err
   rm -f "$marker"
@@ -52,7 +64,7 @@ run_one() {
     fail=1
     return
   fi
-  if ! jq -e '.ok == true' <<<"$out" >/dev/null 2>&1; then
+  if ! jq -e "$expect" <<<"$out" >/dev/null 2>&1; then
     echo "hostile: FAIL $label not-ok $(jq -r '.reason // "bad-json"' <<<"$out" 2>/dev/null || true)" >&2
     fail=1
     return
@@ -181,6 +193,102 @@ git -C "$repo/sub" config core.fsmonitor "$mark"
 printf '%s\n' dirty >> "$repo/sub/f"
 git -C "$repo" config submodule.recurse true
 run_paths "$repo" submodule
+
+repo=$(new_repo filter-weird-subsection)
+mkdir -p "$repo/slash" "$repo/utf" "$repo/space"
+printf '%s\n' '* filter=evil!' > "$repo/.gitattributes"
+printf '%s\n' '* filter=evil/x' > "$repo/slash/.gitattributes"
+printf '%s\n' '* filter=évil' > "$repo/utf/.gitattributes"
+printf '%s\n' '* filter=evil name' > "$repo/space/.gitattributes"
+printf '%s\n' a > "$repo/file"
+printf '%s\n' a > "$repo/slash/file"
+printf '%s\n' a > "$repo/utf/file"
+printf '%s\n' a > "$repo/space/file"
+git -C "$repo" add .gitattributes slash utf space file
+git -C "$repo" commit -q -m attrs
+git -C "$repo" config filter.evil!.clean "$mark"
+git -C "$repo" config filter.evil!.required true
+git -C "$repo" config filter.evil/x.process "$mark"
+git -C "$repo" config "filter.evil name.clean" "$mark"
+git -C "$repo" config "filter.evil name.required" true
+git -C "$repo" config "filter.évil.clean" "$mark"
+git -C "$repo" config "filter.évil.required" true
+printf '%s\n' dirty >> "$repo/file"
+printf '%s\n' dirty >> "$repo/slash/file"
+printf '%s\n' dirty >> "$repo/utf/file"
+printf '%s\n' dirty >> "$repo/space/file"
+title=$(basename "$repo")
+hash=$(git -C "$repo" rev-parse HEAD)
+run_one "filter-weird-subsection graph" env LC_ALL=C "$helper" --path "$repo" --title "$title" --class folio
+run_one "filter-weird-subsection view" env LC_ALL=C GIT_TREE_VIEW=side "$helper" --path "$repo" --title "$title" --class folio
+run_one "filter-weird-subsection commit" env LC_ALL=C "$helper" --path "$repo" --title "$title" --class folio --commit "$hash"
+
+promisor_remote() {
+  local repo=$1
+  local url=$2
+  local blob
+  blob=$(git -C "$repo" rev-parse HEAD:file)
+  rm -f "$repo/.git/objects/${blob:0:2}/${blob:2}"
+  git -C "$repo" config remote.origin.url "$url"
+  git -C "$repo" config remote.origin.promisor true
+  git -C "$repo" config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
+  git -C "$repo" config extensions.partialclone origin
+}
+
+run_promisor() {
+  local repo=$1
+  local label=$2
+  local title hash
+  title=$(basename "$repo")
+  hash=$(git -C "$repo" rev-parse HEAD)
+  run_one "$label graph" --expect '.ok == true and (.commits | length) > 0' \
+    "$helper" --path "$repo" --title "$title" --class folio
+  run_one "$label view" --expect '.ok == true and .viewing == "side" and (.commits | length) > 0' \
+    env GIT_TREE_VIEW=side "$helper" --path "$repo" --title "$title" --class folio
+  run_one "$label commit" --expect '.ok == true and .kind == "commit" and (.diff | length) == 0' \
+    "$helper" --path "$repo" --title "$title" --class folio --commit "$hash"
+}
+
+repo=$(new_repo promisor-ssh)
+promisor_remote "$repo" 'ssh://127.0.0.1/no-such-repo'
+git -C "$repo" config core.sshCommand "$mark"
+run_promisor "$repo" promisor-ssh
+
+repo=$(new_repo promisor-proxy)
+promisor_remote "$repo" 'git://127.0.0.1/no-such-repo'
+git -C "$repo" config core.gitProxy "$mark"
+run_promisor "$repo" promisor-proxy
+
+portf=$tmp/port
+python3 - "$portf" << 'PY' &
+import http.server
+import sys
+portf = sys.argv[1]
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Basic realm="git"')
+        self.end_headers()
+    def do_POST(self):
+        self.do_GET()
+    def log_message(self, fmt, *args):
+        return
+server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+with open(portf, "w") as handle:
+    handle.write(str(server.server_address[1]))
+server.serve_forever()
+PY
+httpd_pid=$!
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+  [[ -s $portf ]] && break
+  sleep 0.1
+done
+[[ -s $portf ]] || { echo "hostile: FAIL promisor-http server" >&2; exit 1; }
+port=$(cat "$portf")
+repo=$(new_repo promisor-http)
+promisor_remote "$repo" "http://127.0.0.1:${port}/repo.git"
+git -C "$repo" config credential.helper "$mark"
+run_promisor "$repo" promisor-http
 
 if [[ $fail -ne 0 ]]; then
   echo "hostile: failed" >&2
